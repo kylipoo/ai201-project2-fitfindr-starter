@@ -13,6 +13,7 @@ Tools:
 """
 
 import os
+import re
 
 from dotenv import load_dotenv
 from groq import Groq
@@ -22,7 +23,16 @@ from utils.data_loader import load_listings
 load_dotenv()
 
 
+def _tokenize(text: str) -> set[str]:
+    """Lowercase a string and split it into a set of alphanumeric word tokens."""
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
 # ── Groq client ───────────────────────────────────────────────────────────────
+
+# Default Groq model; override with GROQ_MODEL in .env if desired.
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+
 
 def _get_groq_client():
     """Initialize and return a Groq client using GROQ_API_KEY from .env."""
@@ -32,6 +42,21 @@ def _get_groq_client():
             "GROQ_API_KEY not set. Add it to a .env file in the project root."
         )
     return Groq(api_key=api_key)
+
+
+def _chat(messages: list[dict], temperature: float = 0.7) -> str:
+    """Send a chat completion to Groq and return the assistant's text.
+
+    This is the single network boundary for the LLM-backed tools; keeping it
+    isolated lets the tools be unit-tested by stubbing this function out.
+    """
+    client = _get_groq_client()
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=messages,
+        temperature=temperature,
+    )
+    return (response.choices[0].message.content or "").strip()
 
 
 # ── Tool 1: search_listings ───────────────────────────────────────────────────
@@ -69,8 +94,33 @@ def search_listings(
 
     Before writing code, fill in the Tool 1 section of planning.md.
     """
-    # Replace this with your implementation
-    return []
+    query_tokens = _tokenize(description)
+    size_query = _tokenize(size) if size else set()
+
+    scored: list[tuple[int, dict]] = []
+    for item in load_listings():
+        # Filter: price ceiling (inclusive).
+        if max_price is not None and item["price"] > max_price:
+            continue
+
+        # Filter: size, matched token-wise so "m" matches "S/M" but not "XL".
+        if size_query and not size_query.issubset(_tokenize(item["size"])):
+            continue
+
+        # Score: keyword overlap across title, description, and style tags.
+        searchable = _tokenize(
+            f"{item['title']} {item['description']} {' '.join(item['style_tags'])}"
+        )
+        score = len(query_tokens & searchable)
+        if score == 0:
+            continue
+
+        scored.append((score, item))
+
+    # Sort by score, highest first. Python's stable sort keeps dataset order
+    # for ties, so results are deterministic.
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored]
 
 
 # ── Tool 2: suggest_outfit ────────────────────────────────────────────────────
@@ -100,8 +150,75 @@ def suggest_outfit(new_item: dict, wardrobe: dict) -> str:
 
     Before writing code, fill in the Tool 2 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    messages = _build_outfit_messages(new_item, wardrobe)
+    suggestion = _chat(messages, temperature=0.7).strip()
+    if not suggestion:
+        # The LLM should always answer, but never hand back an empty string.
+        return (
+            "Style it with simple, complementary basics in neutral tones and "
+            "let the piece be the focus."
+        )
+    return suggestion
+
+
+_OUTFIT_SYSTEM = (
+    "You are FitFindr, a thrift-savvy personal stylist. Suggest 1-2 complete, "
+    "wearable outfits. Be concrete and concise (a few sentences), warm and "
+    "encouraging rather than salesy."
+)
+
+
+def _describe_item(new_item: dict) -> str:
+    """Render a listing dict into a one-line description for the prompt."""
+    title = new_item.get("title", "the item")
+    details = []
+    if new_item.get("category"):
+        details.append(new_item["category"])
+    if new_item.get("colors"):
+        details.append(", ".join(new_item["colors"]))
+    if new_item.get("style_tags"):
+        details.append(", ".join(new_item["style_tags"]))
+    return f"{title} ({'; '.join(details)})" if details else title
+
+
+def _format_wardrobe(wardrobe: dict) -> str:
+    """Render the user's wardrobe items into a bulleted list for the prompt."""
+    lines = []
+    for item in wardrobe.get("items") or []:
+        line = item.get("name", "unnamed item")
+        if item.get("colors"):
+            line += f" ({', '.join(item['colors'])})"
+        if item.get("notes"):
+            line += f" — {item['notes']}"
+        lines.append(f"- {line}")
+    return "\n".join(lines)
+
+
+def _build_outfit_messages(new_item: dict, wardrobe: dict) -> list[dict]:
+    """Build the chat messages for suggest_outfit, branching on wardrobe state."""
+    item_desc = _describe_item(new_item)
+
+    if wardrobe.get("items"):
+        user = (
+            f"The user is considering this secondhand item:\n{item_desc}\n\n"
+            f"Here is what they already own (their wardrobe):\n"
+            f"{_format_wardrobe(wardrobe)}\n\n"
+            "Suggest 1-2 complete outfits that pair the new item with specific "
+            "pieces from their wardrobe. Name the wardrobe pieces you use."
+        )
+    else:
+        user = (
+            f"The user is considering this secondhand item:\n{item_desc}\n\n"
+            "They have not entered a wardrobe yet, so give general styling "
+            "advice: what kinds of pieces (types, colors, vibes) pair well with "
+            "it and what overall look it suits. Do not invent specific items "
+            "they own."
+        )
+
+    return [
+        {"role": "system", "content": _OUTFIT_SYSTEM},
+        {"role": "user", "content": user},
+    ]
 
 
 # ── Tool 3: create_fit_card ───────────────────────────────────────────────────
@@ -133,5 +250,45 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     Before writing code, fill in the Tool 3 section of planning.md.
     """
-    # Replace this with your implementation
-    return ""
+    if not outfit or not outfit.strip():
+        # Safety net: no styling content to build a caption from.
+        return "Can't create a fit card without an outfit suggestion to work from."
+
+    messages = _build_fit_card_messages(outfit, new_item)
+    # Higher temperature than the other tools so captions vary across runs.
+    caption = _chat(messages, temperature=1.0).strip()
+    if not caption:
+        title = new_item.get("title", "this piece")
+        return f"Thrifted {title} and styled it up — a total score. ✨"
+    return caption
+
+
+_FIT_CARD_SYSTEM = (
+    "You are FitFindr. Write a short, casual social-media caption for a "
+    "secondhand fashion find — like a real OOTD post, not a product "
+    "description. Sound authentic and a little excited, never salesy."
+)
+
+
+def _build_fit_card_messages(outfit: str, new_item: dict) -> list[dict]:
+    """Build the chat messages for create_fit_card from the item and outfit."""
+    name = new_item.get("title", "this piece")
+    price = new_item.get("price")
+    platform = new_item.get("platform", "")
+    price_str = f"${price:.2f}" if isinstance(price, (int, float)) else "a great price"
+
+    user = (
+        "Write a caption for this thrifted find.\n"
+        f"Item: {name}\n"
+        f"Price: {price_str}\n"
+        f"Platform: {platform}\n\n"
+        f"Styling: {outfit}\n\n"
+        "Write 2-4 sentences. Work in the item name, price, and platform "
+        "naturally — once each. Capture the outfit's vibe in specific terms. "
+        "Keep it casual and authentic, like something a real person would post."
+    )
+
+    return [
+        {"role": "system", "content": _FIT_CARD_SYSTEM},
+        {"role": "user", "content": user},
+    ]

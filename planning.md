@@ -102,6 +102,8 @@ If outfit is empty or whitespace-only, the tool returns a descriptive error-mess
 
 ---
 
+May potentially implement tools that format the wardrobe or the listing item.
+
 ## Planning Loop
 
 **How does your agent decide which tool to call next?**
@@ -114,7 +116,7 @@ The planning loop is linear with early-exit guards — not a free-form "pick a t
 
 Step 1 — Initialize. Build the session with \_new_session(query, wardrobe). All result fields start empty and session["error"] starts as None.
 
-Step 2 — Parse the query. Extract description, size, and max_price from the natural-language query and store them in session["parsed"]. Size and max_price are optional — if the query states no size, leave it None; if it states no price, leave it None. (Parsing method: [I'll use regex / string-splitting / an LLM call — pick one and state it here].)
+Step 2 — Parse the query. Extract description, size, and max_price from the natural-language query and store them in session["parsed"]. Size and max_price are optional — if the query states no size, leave it None; if it states no price, leave it None. (Parsing method: an LLM call via the existing Groq client — the query is sent with a prompt asking for a structured `{description, size, max_price}` extraction, which is robust to messy phrasing like "under 30 bucks" or "size medium-ish". The LLM is instructed to return `null` for any field the query doesn't mention.)
 
 Step 3 — Search, then branch on results. Call search_listings(description, size, max_price) and store the list in session["search_results"].
 
@@ -136,17 +138,36 @@ How it knows it's done: the loop terminates either at the early return in Step 3
 
 <!-- Describe how your agent stores and accesses state within a session. What data is tracked? How is it passed between tool calls? -->
 
+State lives in a single **session dict**, created by `_new_session(query, wardrobe)` in `agent.py`. There is no global or cross-request state — one dict is created per call to `run_agent()` and is the single source of truth for that interaction. The tools themselves (`search_listings`, `suggest_outfit`, `create_fit_card`) are stateless: they take explicit arguments and return values, and never read or write the session directly. The **planning loop is the only thing that touches the session** — after each tool returns, the loop stores the result in the session and then reads the field it needs to build the next tool's arguments.
+
+**What is tracked (the session fields, from `_new_session`):**
+
+| Field               | Set by                       | Used by                                                     |
+| ------------------- | ---------------------------- | ----------------------------------------------------------- |
+| `query`             | caller / Step 1              | Step 2 (parsing)                                            |
+| `parsed`            | Step 2 (LLM extraction)      | Step 3 — `description`, `size`, `max_price` for the search  |
+| `search_results`    | Step 3                       | Step 4 (select), and the empty-check that branches to error |
+| `selected_item`     | Step 4 (`search_results[0]`) | Step 5 (`new_item`) and Step 6 (`new_item`)                 |
+| `wardrobe`          | caller / Step 1              | Step 5 (`suggest_outfit`)                                   |
+| `outfit_suggestion` | Step 5                       | Step 6 (`create_fit_card`)                                  |
+| `fit_card`          | Step 6                       | final output to user                                        |
+| `error`             | any step on early exit       | caller — checked first to distinguish success vs. failure   |
+
+**How data is passed between tools:** the loop threads it explicitly. `search_results[0]` becomes `selected_item`, which is passed as `new_item` into `suggest_outfit`; that returns `outfit_suggestion`, which is passed alongside `selected_item` into `create_fit_card`. Nothing is passed implicitly — every hand-off is a field written to the session and then read back out, so the full state of any run can be inspected by printing the session dict.
+
 ---
 
 ## Error Handling
 
 For each tool, describe the specific failure mode you're handling and what the agent does in response.
 
-| Tool            | Failure mode                          | Agent response |
-| --------------- | ------------------------------------- | -------------- |
-| search_listings | No results match the query            |                |
-| suggest_outfit  | Wardrobe is empty                     |                |
-| create_fit_card | Outfit input is missing or incomplete |                |
+| Tool            | Failure mode                          | Agent response                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------- | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| search_listings | No results match the query            | Tool returns `[]` (never raises). The loop detects the empty list in Step 3, sets `session["error"]` to a specific, actionable message (e.g. "No listings under $30 matched 'vintage graphic tee'. Try raising the price or loosening the description.") and **returns the session immediately** — it does not call `suggest_outfit`, whose `new_item` would otherwise be invalid. `outfit_suggestion` and `fit_card` stay `None`. |
+| suggest_outfit  | Wardrobe is empty                     | Not treated as an error — the tool checks `wardrobe["items"]` and, if empty, switches its prompt to ask the LLM for **general styling advice** (what kinds of pieces and vibes pair with the item) instead of naming owned pieces. It always returns a non-empty string, so the loop proceeds normally to Step 6.                                                                                                                  |
+| create_fit_card | Outfit input is missing or incomplete | The tool guards against an empty / whitespace-only `outfit` string and returns a **descriptive error-message string** rather than raising or calling the LLM. This is a safety net: in the happy path it never fires, because `suggest_outfit` always returns a non-empty string.                                                                                                                                                  |
+
+**Cross-cutting failures (LLM/API):** any unexpected exception from a Groq call (network error, missing/invalid `GROQ_API_KEY`, rate limit) is allowed to surface as a clear error rather than being silently swallowed — `_get_groq_client()` already raises a descriptive `ValueError` when the key is unset. The three failure modes above are the _expected, designed-for_ ones the agent recovers from gracefully.
 
 ---
 
@@ -161,7 +182,48 @@ For each tool, describe the specific failure mode you're handling and what the a
      sketch are all fine. You'll share this diagram with an AI tool when asking it to implement
      the planning loop and each individual tool. -->
 
+The planning loop is the spine: it owns the session and calls the tools left-to-right. Two branch points (empty search results, empty wardrobe) and one guard (empty outfit) are where the error paths live. The session sits beside the loop — every step reads from and writes to it.
+
+```mermaid
+flowchart TD
+    U([User query + wardrobe]) --> S1[Step 1: _new_session  ->  session dict]
+    S1 --> S2[Step 2: parse query via Groq LLM  ->  session.parsed]
+    S2 --> S3[Step 3: search_listings desc, size, max_price  ->  session.search_results]
+
+    S3 --> B1{results empty?}
+    B1 -- yes --> E1[set session.error = helpful message]
+    E1 --> R([return session  -  error set, outputs None])
+    B1 -- no --> S4[Step 4: selected_item = search_results 0]
+
+    S4 --> S5[Step 5: suggest_outfit selected_item, wardrobe]
+    S5 --> B2{wardrobe.items empty?}
+    B2 -- yes --> G1[LLM: general styling advice]
+    B2 -- no --> G2[LLM: outfit from owned pieces]
+    G1 --> S5b[session.outfit_suggestion  -  always non-empty]
+    G2 --> S5b
+
+    S5b --> S6[Step 6: create_fit_card outfit, selected_item]
+    S6 --> B3{outfit empty / whitespace?}
+    B3 -- yes --> G3[return descriptive error string  -  safety net]
+    B3 -- no --> G4[LLM @ high temp: OOTD caption]
+    G3 --> S6b[session.fit_card]
+    G4 --> S6b
+    S6b --> R2([return session  -  fit_card set, error None])
+
+    SESSION[(session dict\nquery, parsed, search_results,\nselected_item, wardrobe,\noutfit_suggestion, fit_card, error)]
+    S1 -.-> SESSION
+    S2 -.-> SESSION
+    S3 -.-> SESSION
+    S4 -.-> SESSION
+    S5b -.-> SESSION
+    S6b -.-> SESSION
+```
+
 ---
+
+Mermaid screenshot:
+
+![alt text](<Screenshot 2026-06-11 at 10.19.21 AM.jpg>)
 
 ## AI Tool Plan
 
@@ -178,7 +240,17 @@ For each tool, describe the specific failure mode you're handling and what the a
 
 **Milestone 3 — Individual tool implementations:**
 
+**Tool I'll use:** Claude (Claude Code), since the tool specs in this doc are detailed enough to drive code generation directly. I'll implement the three tools **one at a time**, in dependency order (`search_listings` → `suggest_outfit` → `create_fit_card`), testing each in isolation before the next.
+
+- **`search_listings`** — Input to Claude: the Tool 1 spec (inputs, return shape, the "returns `[]`, never raises" failure mode) plus the `load_listings()` signature from `utils/data_loader.py` and the listing field list. Expected output: a function that loads listings, filters by `size`/`max_price`, scores remaining items by keyword overlap with `description`, drops zero-score items, and returns them sorted best-first. **Verify before trusting:** run 3 queries — (1) "vintage graphic tee" → relevant tees ranked first; (2) a query with `size="M"` + `max_price=30` → confirm both filters apply; (3) "designer ballgown size XXS under $5" → returns `[]`. Eyeball the top-3 scores on query 1 for sane ranking.
+- **`suggest_outfit`** — Input to Claude: the Tool 2 spec, the wardrobe dict shape (`items` list), and the empty-wardrobe requirement. Expected output: a function that branches on `wardrobe["items"]` — specific outfits when populated, general styling advice when empty — and always returns a non-empty string. **Verify:** call once with `get_example_wardrobe()` (should name real owned pieces) and once with `get_empty_wardrobe()` (should give general advice, never crash, never empty).
+- **`create_fit_card`** — Input to Claude: the Tool 3 spec, including the empty-outfit guard and the caption style rules (casual, mentions name/price/platform once each, higher temperature). Expected output: a guard that returns an error string for empty input, otherwise an LLM-generated 2–4 sentence caption. **Verify:** call with a real `outfit` string + a listing dict (caption mentions name/price/platform, reads casual); call with `""` (returns the descriptive error string, no LLM call); call twice with the same input at high temp (captions differ).
+
 **Milestone 4 — Planning loop and state management:**
+
+**Tool I'll use:** Claude (Claude Code). Input to Claude: the **Planning Loop**, **State Management**, **Error Handling**, and **Architecture** sections above (the Mermaid diagram especially), plus the `_new_session()` field list and the three tested tool signatures. Expected output: `run_agent()` implementing the 7-step sequence — initialize session, LLM-parse the query into `session["parsed"]`, search, **early-return on empty results with `session["error"]` set**, select top item, suggest outfit, create fit card, return the session. State must be threaded only through the session dict (no globals), matching the State Management table.
+
+**Verify before trusting:** run three end-to-end paths and inspect the returned session — (1) **happy path** ("vintage graphic tee under $30" + example wardrobe) → `error is None`, `selected_item`/`outfit_suggestion`/`fit_card` all populated; (2) **no-results path** ("designer ballgown size XXS under $5") → `error` is a helpful string and `outfit_suggestion`/`fit_card` are still `None` (proves the early return fired before `suggest_outfit`); (3) **empty-wardrobe path** (happy query + `get_empty_wardrobe()`) → completes with a general-advice outfit and a valid fit card. The `__main__` block in `agent.py` already exercises paths (1) and (2), so I'll run `python agent.py` and add the empty-wardrobe case.
 
 ---
 
