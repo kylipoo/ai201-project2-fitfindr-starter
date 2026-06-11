@@ -12,6 +12,7 @@ Tools:
     create_fit_card(outfit, new_item)               → str
 """
 
+import json
 import os
 import re
 
@@ -292,3 +293,62 @@ def _build_fit_card_messages(outfit: str, new_item: dict) -> list[dict]:
         {"role": "system", "content": _FIT_CARD_SYSTEM},
         {"role": "user", "content": user},
     ]
+
+
+# ── Query parsing (planning loop Step 2) ──────────────────────────────────────
+
+_PARSE_SYSTEM = (
+    "You parse a thrift-shopping query into JSON. Extract ONLY the item the "
+    "user wants to BUY:\n"
+    '- description: the item they are searching for (e.g. "vintage graphic tee")\n'
+    "- size: the size they state, else null\n"
+    "- max_price: a number if they give a price ceiling, else null\n"
+    "Ignore anything they say they already OWN or WEAR. "
+    'Return JSON only, no prose: {"description": ..., "size": ..., "max_price": ...}'
+)
+
+
+def _extract_json(text: str) -> str:
+    """Pull the first {...} block out of an LLM response (tolerates fences/prose)."""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end + 1]
+    return text
+
+
+def _coerce_float(value) -> float | None:
+    """Best-effort convert a value to float, or None if it can't be."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_query(query: str) -> dict:
+    """Extract {description, size, max_price} from a natural-language query.
+
+    Uses the LLM at temperature 0 for a deterministic extraction. Always returns
+    a dict with all three keys; on any failure it falls back to using the whole
+    query as the description so the planning loop can still run a search.
+    """
+    messages = [
+        {"role": "system", "content": _PARSE_SYSTEM},
+        {"role": "user", "content": query},
+    ]
+    try:
+        raw = _chat(messages, temperature=0)
+        data = json.loads(_extract_json(raw))
+        if not isinstance(data, dict):
+            raise ValueError("expected a JSON object")
+    except Exception:
+        return {"description": query, "size": None, "max_price": None}
+
+    size = data.get("size")
+    return {
+        "description": data.get("description") or query,
+        "size": str(size) if size is not None else None,
+        "max_price": _coerce_float(data.get("max_price")),
+    }

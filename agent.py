@@ -18,7 +18,7 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
-from tools import search_listings, suggest_outfit, create_fit_card
+from tools import search_listings, suggest_outfit, create_fit_card, parse_query
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,10 +92,47 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1 — Initialize the session (single source of truth for this run).
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2 — Parse the query into description / size / max_price.
+    session["parsed"] = parse_query(query)
+    parsed = session["parsed"]
+
+    # Step 3 — Search, then branch on the results.
+    session["search_results"] = search_listings(
+        parsed["description"], parsed["size"], parsed["max_price"]
+    )
+    if not session["search_results"]:
+        session["error"] = _no_results_message(parsed)
+        return session   # early exit: don't call suggest_outfit with no item
+
+    # Step 4 — Select the top-ranked result (search returns them best-first).
+    session["selected_item"] = session["search_results"][0]
+
+    # Step 5 — Suggest an outfit from the item + the user's wardrobe.
+    session["outfit_suggestion"] = suggest_outfit(session["selected_item"], wardrobe)
+
+    # Step 6 — Turn the styling suggestion into a shareable fit card.
+    session["fit_card"] = create_fit_card(
+        session["outfit_suggestion"], session["selected_item"]
+    )
+
+    # Step 7 — Return the completed session.
     return session
+
+
+def _no_results_message(parsed: dict) -> str:
+    """Build a helpful, specific message when the search returns nothing."""
+    constraints = [f"'{parsed['description']}'"]
+    if parsed.get("size"):
+        constraints.append(f"size {parsed['size']}")
+    if parsed.get("max_price") is not None:
+        constraints.append(f"under ${parsed['max_price']:.0f}")
+    return (
+        "No listings matched " + ", ".join(constraints) + ". "
+        "Try loosening the description, raising the price, or dropping the size filter."
+    )
 
 
 # ── CLI test ──────────────────────────────────────────────────────────────────
