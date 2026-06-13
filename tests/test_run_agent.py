@@ -101,6 +101,36 @@ def test_error_message_mentions_query_constraints(monkeypatch):
     assert "5" in msg                 # references the price ceiling
 
 
+def test_category_mismatch_flags_fallback(monkeypatch):
+    _stub_tools(
+        monkeypatch,
+        parsed={"description": "track jacket", "size": None, "max_price": None, "category": "outerwear"},
+        results=[{"id": "x", "title": "Slip Dress", "price": 30.0, "platform": "depop", "category": "bottoms"}],
+    )
+    session = run_agent("track jacket", {"items": []})
+    assert session["match_quality"] == "fallback"
+
+
+def test_category_match_is_exact(monkeypatch):
+    _stub_tools(
+        monkeypatch,
+        parsed={"description": "track jacket", "size": None, "max_price": None, "category": "outerwear"},
+        results=[{"id": "x", "title": "Track Jacket", "price": 28.0, "platform": "depop", "category": "outerwear"}],
+    )
+    session = run_agent("track jacket", {"items": []})
+    assert session["match_quality"] == "exact"
+
+
+def test_no_category_is_treated_as_exact(monkeypatch):
+    _stub_tools(
+        monkeypatch,
+        parsed={"description": "something blue", "size": None, "max_price": None, "category": None},
+        results=[{"id": "x", "title": "Blue Thing", "price": 10.0, "platform": "depop", "category": "tops"}],
+    )
+    session = run_agent("something blue", {"items": []})
+    assert session["match_quality"] == "exact"
+
+
 @pytest.mark.skipif(
     not os.environ.get("FITFINDR_LIVE_TESTS"),
     reason="set FITFINDR_LIVE_TESTS=1 to run live Groq calls",

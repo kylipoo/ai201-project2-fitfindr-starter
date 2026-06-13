@@ -41,6 +41,7 @@ def _new_session(query: str, wardrobe: dict) -> dict:
         "wardrobe": wardrobe,        # user's wardrobe dict
         "outfit_suggestion": None,   # string returned by suggest_outfit
         "fit_card": None,            # string returned by create_fit_card
+        "match_quality": "exact",    # "exact" or "fallback" (see _match_quality)
         "error": None,               # set if the interaction ended early
     }
 
@@ -110,6 +111,10 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     # Step 4 — Select the top-ranked result (search returns them best-first).
     session["selected_item"] = session["search_results"][0]
 
+    # Step 4b — Judge whether the top result is the right kind of item, so the
+    # UI can be honest when it had to fall back to a near-miss.
+    session["match_quality"] = _match_quality(parsed, session["selected_item"])
+
     # Step 5 — Suggest an outfit from the item + the user's wardrobe.
     session["outfit_suggestion"] = suggest_outfit(session["selected_item"], wardrobe)
 
@@ -120,6 +125,18 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
     # Step 7 — Return the completed session.
     return session
+
+
+def _match_quality(parsed: dict, item: dict) -> str:
+    """Return "exact" or "fallback" by comparing parsed category to the item.
+
+    When the query has no clear category, we have no basis to doubt the top
+    result, so we treat it as exact rather than crying wolf.
+    """
+    expected = parsed.get("category")
+    if expected is None:
+        return "exact"
+    return "exact" if expected == item.get("category") else "fallback"
 
 
 def _no_results_message(parsed: dict) -> str:
