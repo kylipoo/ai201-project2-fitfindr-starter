@@ -61,13 +61,22 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
         return session["error"], "", ""
 
     # 5. Otherwise format the listing and return all three panels.
-    listing_text = _format_listing(session["selected_item"])
+    listing_text = _format_listing(
+        session["selected_item"], session.get("match_quality", "exact")
+    )
     return listing_text, session["outfit_suggestion"], session["fit_card"]
 
 
-def _format_listing(item: dict) -> str:
+_FALLBACK_NOTE = "Couldn't find an exact match for that — here's the closest I found:"
+
+
+def _format_listing(item: dict, match_quality: str = "exact") -> str:
     """Render the selected listing dict into readable text for the UI panel."""
-    lines = [
+    lines = []
+    if match_quality == "fallback":
+        lines.append(_FALLBACK_NOTE)
+        lines.append("")
+    lines += [
         item.get("title", "Untitled listing"),
         f"${item.get('price', 0):.2f} · {item.get('platform', '')}",
         f"Size {item.get('size', '?')} · {item.get('condition', '?')} condition",
