@@ -19,7 +19,7 @@ ITEM = {"id": "lst_x", "title": "Faded Tee", "price": 22.0, "platform": "depop"}
 
 
 def _stub_tools(monkeypatch, *, parsed=None, results=None, outfit="OUTFIT TEXT", card="CARD TEXT"):
-    parsed = parsed or {"description": "tee", "size": None, "max_price": None}
+    parsed = parsed or {"description": "tee", "size": None, "max_price": None, "category": None}
     results = [ITEM] if results is None else results
     monkeypatch.setattr(agent, "parse_query", lambda query: parsed)
     monkeypatch.setattr(agent, "search_listings", lambda desc, size=None, max_price=None: results)
@@ -99,6 +99,46 @@ def test_error_message_mentions_query_constraints(monkeypatch):
     msg = session["error"].lower()
     assert "ballgown" in msg          # names what was searched
     assert "5" in msg                 # references the price ceiling
+
+
+def test_category_mismatch_flags_fallback(monkeypatch):
+    _stub_tools(
+        monkeypatch,
+        parsed={"description": "track jacket", "size": None, "max_price": None, "category": "outerwear"},
+        results=[{"id": "x", "title": "Slip Dress", "price": 30.0, "platform": "depop", "category": "bottoms"}],
+    )
+    session = run_agent("track jacket", {"items": []})
+    assert session["match_quality"] == "fallback"
+
+
+def test_category_match_is_exact(monkeypatch):
+    _stub_tools(
+        monkeypatch,
+        parsed={"description": "track jacket", "size": None, "max_price": None, "category": "outerwear"},
+        results=[{"id": "x", "title": "Track Jacket", "price": 28.0, "platform": "depop", "category": "outerwear"}],
+    )
+    session = run_agent("track jacket", {"items": []})
+    assert session["match_quality"] == "exact"
+
+
+def test_no_category_is_treated_as_exact(monkeypatch):
+    _stub_tools(
+        monkeypatch,
+        parsed={"description": "something blue", "size": None, "max_price": None, "category": None},
+        results=[{"id": "x", "title": "Blue Thing", "price": 10.0, "platform": "depop", "category": "tops"}],
+    )
+    session = run_agent("something blue", {"items": []})
+    assert session["match_quality"] == "exact"
+
+
+def test_item_without_category_is_fallback(monkeypatch):
+    _stub_tools(
+        monkeypatch,
+        parsed={"description": "track jacket", "size": None, "max_price": None, "category": "outerwear"},
+        results=[{"id": "x", "title": "Untagged Item", "price": 10.0, "platform": "depop"}],  # no category key
+    )
+    session = run_agent("track jacket", {"items": []})
+    assert session["match_quality"] == "fallback"
 
 
 @pytest.mark.skipif(

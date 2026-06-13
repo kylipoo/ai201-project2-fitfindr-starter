@@ -12,7 +12,7 @@ import os
 import pytest
 
 import app
-from app import handle_query
+from app import handle_query, _FALLBACK_NOTE
 
 CANNED_ITEM = {
     "id": "lst_006",
@@ -36,6 +36,7 @@ def _session(**overrides):
         "outfit_suggestion": "OUTFIT TEXT",
         "fit_card": "CARD TEXT",
         "error": None,
+        "match_quality": "exact",
     }
     session.update(overrides)
     return session
@@ -99,6 +100,20 @@ def test_empty_choice_passes_empty_wardrobe(monkeypatch):
     handle_query("tee", "Empty wardrobe (new user)")
     w = seen.get("wardrobe")
     assert w is not None and w["items"] == []
+
+
+def test_fallback_prepends_caveat_to_listing(monkeypatch):
+    monkeypatch.setattr(app, "run_agent", lambda q, w: _session(match_quality="fallback"))
+    listing, outfit, card = handle_query("track jacket", "Example wardrobe")
+    assert listing.startswith(_FALLBACK_NOTE)                       # caveat shown
+    assert "Graphic Tee — 2003 Tour Bootleg Style" in listing      # item still shown
+    assert outfit == "OUTFIT TEXT" and card == "CARD TEXT" # downstream unchanged
+
+
+def test_exact_match_has_no_caveat(monkeypatch):
+    monkeypatch.setattr(app, "run_agent", lambda q, w: _session(match_quality="exact"))
+    listing, _, _ = handle_query("tee", "Example wardrobe")
+    assert _FALLBACK_NOTE not in listing
 
 
 @pytest.mark.skipif(
