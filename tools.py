@@ -303,9 +303,25 @@ _PARSE_SYSTEM = (
     '- description: the item they are searching for (e.g. "vintage graphic tee")\n'
     "- size: the size they state, else null\n"
     "- max_price: a number if they give a price ceiling, else null\n"
+    "- category: the clothing category, one of "
+    '"tops", "bottoms", "outerwear", "shoes", "accessories", '
+    "or null if it does not clearly fit one\n"
     "Ignore anything they say they already OWN or WEAR. "
-    'Return JSON only, no prose: {"description": ..., "size": ..., "max_price": ...}'
+    "Return JSON only, no prose: "
+    '{"description": ..., "size": ..., "max_price": ..., "category": ...}'
 )
+
+# The categories present in data/listings.json. Anything else is treated as
+# "unknown" so the match-quality check stays conservative.
+_VALID_CATEGORIES = {"tops", "bottoms", "outerwear", "shoes", "accessories"}
+
+
+def _coerce_category(value) -> str | None:
+    """Normalize a category to one of the known values, or None."""
+    if not isinstance(value, str):
+        return None
+    category = value.strip().lower()
+    return category if category in _VALID_CATEGORIES else None
 
 
 def _extract_json(text: str) -> str:
@@ -344,11 +360,12 @@ def parse_query(query: str) -> dict:
         if not isinstance(data, dict):
             raise ValueError("expected a JSON object")
     except Exception:
-        return {"description": query, "size": None, "max_price": None}
+        return {"description": query, "size": None, "max_price": None, "category": None}
 
     size = data.get("size")
     return {
         "description": data.get("description") or query,
         "size": str(size) if size is not None else None,
         "max_price": _coerce_float(data.get("max_price")),
+        "category": _coerce_category(data.get("category")),
     }

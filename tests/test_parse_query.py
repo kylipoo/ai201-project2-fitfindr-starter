@@ -56,10 +56,30 @@ def test_falls_back_to_raw_query_when_llm_returns_garbage(monkeypatch):
     assert parsed["max_price"] is None
 
 
-def test_always_returns_the_three_keys(monkeypatch):
-    _stub_chat(monkeypatch, '{"description": "hat"}')   # LLM omits size/max_price
+def test_always_returns_the_four_keys(monkeypatch):
+    _stub_chat(monkeypatch, '{"description": "hat"}')   # LLM omits the rest
     parsed = parse_query("a hat")
-    assert set(parsed.keys()) == {"description", "size", "max_price"}
+    assert set(parsed.keys()) == {"description", "size", "max_price", "category"}
+
+
+def test_extracts_category(monkeypatch):
+    _stub_chat(monkeypatch, '{"description": "90s track jacket", "size": "M", "max_price": 30, "category": "outerwear"}')
+    assert parse_query("90s track jacket, size M, under $30")["category"] == "outerwear"
+
+
+def test_category_is_normalized_to_lowercase(monkeypatch):
+    _stub_chat(monkeypatch, '{"description": "boots", "size": "8", "max_price": null, "category": "Shoes"}')
+    assert parse_query("boots size 8")["category"] == "shoes"
+
+
+def test_invalid_category_becomes_none(monkeypatch):
+    _stub_chat(monkeypatch, '{"description": "dress", "size": null, "max_price": null, "category": "dresses"}')
+    assert parse_query("a dress")["category"] is None
+
+
+def test_missing_category_becomes_none(monkeypatch):
+    _stub_chat(monkeypatch, '{"description": "hat"}')   # LLM omits category
+    assert parse_query("a hat")["category"] is None
 
 
 @pytest.mark.skipif(
