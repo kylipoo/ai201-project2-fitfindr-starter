@@ -31,7 +31,7 @@ def _new_session(query: str, wardrobe: dict) -> dict:
     during a run — it stores the original query, parsed parameters, tool results,
     and any error that caused early termination.
 
-    You may add fields to this dict as needed for your implementation.
+    Further fields may be added if later steps require them.
     """
     return {
         "query": query,              # original user query
@@ -81,6 +81,11 @@ def run_agent(query: str, wardrobe: dict) -> dict:
 
         Step 4: Select the item to use (e.g., the top result).
                 Store it in session["selected_item"].
+
+        Step 4b: Compare the parsed category to the selected item's category
+                and store the result in session["match_quality"] ("exact" or
+                "fallback"). When the query has no clear category, treat it as
+                "exact" — don't flag a fallback you can't justify.
 
         Step 5: Call suggest_outfit() with the selected item and wardrobe.
                 Store the result in session["outfit_suggestion"].
