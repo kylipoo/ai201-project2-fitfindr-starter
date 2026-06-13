@@ -344,10 +344,10 @@ def _coerce_float(value) -> float | None:
 
 
 def parse_query(query: str) -> dict:
-    """Extract {description, size, max_price} from a natural-language query.
+    """Extract {description, size, max_price, category} from a natural-language query.
 
     Uses the LLM at temperature 0 for a deterministic extraction. Always returns
-    a dict with all three keys; on any failure it falls back to using the whole
+    a dict with all four keys; on any failure it falls back to using the whole
     query as the description so the planning loop can still run a search.
     """
     messages = [

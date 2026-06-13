@@ -1,7 +1,7 @@
 """
 Tests for tools.parse_query (planning loop Step 2).
 
-parse_query asks the LLM to extract {description, size, max_price} from a
+parse_query asks the LLM to extract {description, size, max_price, category} from a
 natural-language query. Unit tests stub the `_chat` seam so they exercise the
 JSON parsing / normalization / fallback logic deterministically and offline.
 A live test is gated behind FITFINDR_LIVE_TESTS=1.
