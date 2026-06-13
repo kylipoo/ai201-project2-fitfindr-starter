@@ -1,0 +1,17 @@
+# Example 1
+
+I'm looking for Platform Mary Janes. I mostly wear baggy jeans and ribbed tank tops. 
+
+
+# Example 2 
+
+I'm looking for a vintage graphic tee under $30, size M. I mostly wear baggy jeans and chunky sneakers.
+
+
+# Example 3 (Item that doesn't exist)
+
+I'm looking for a tee that's under $5, size XL. 
+
+# Example 4 (Not exact match, find next best option)
+
+90s track jacket in size M, under $30 
